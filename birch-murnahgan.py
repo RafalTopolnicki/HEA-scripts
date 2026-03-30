@@ -1,11 +1,13 @@
 '''Example of fitting the Birch-Murnaghan EOS to data'''
 import numpy as np
+import csv
 import sys, getopt
 import matplotlib.pyplot as plt
 from scipy.optimize import leastsq
 import os
 import argparse
 import pandas as pd
+from src.utils import dist_from_si, dist_to_si, energy_from_si, energy_to_si
 
 def volume_to_lattice(vol):
 	return (vol*2.0)**(1.0/3.0)
@@ -27,15 +29,8 @@ def find_pressure_lattice(press, v0, b, bP):
 	latt = volume_to_lattice(vol)
 	return latt
 
-def dist_to_si(x):
-	return x*5.29177e-11
-
-def dist_from_si(x):
-	return x/5.29177e-11
-	
-
 #now we have to create the equation of state function
-def Murnaghan(parameters,vol):
+def Murnaghan(parameters, vol):
     '''
     given a vector of parameters and volumes, return a vector of energies.
     equation From PRB 28,5480 (1983)
@@ -45,17 +40,21 @@ def Murnaghan(parameters,vol):
     BP = parameters[2]
     V0 = parameters[3]
     
-#    E = E0 + B0*vol/BP*(((V0/vol)**BP)/(BP-1)+1) - V0*B0/(BP-1.)
-    E = E0 + 9*V0*B0/16.0*( ((V0/vol)**(2.0/3.0)-1)**3*BP + ((V0/vol)**(2.0/3.0)-1)**2*(6-4*(V0/vol)**(2.0/3.0)) )
+    volratiosign = np.sign(V0/vol)
+    volratio = np.abs(V0/vol)
+    # 
+    E = E0 + B0*vol/BP*(((volratio)**BP*volratiosign)/(BP-1)+1) - V0*B0/(BP-1.)
+    # thrid-order
+#    E = E0 + 9*V0*B0/16.0*( ((volratio)**(2.0/3.0)*volratiosign-1)**3*BP + ((volratio)**(2.0/3.0)*volratiosign-1)**2*(6-4*(volratio)**(2.0/3.0)*volratiosign) )
 
     return E
 
 # and we define an objective function that will be minimized
-def objective(pars,y,x):
+def objective(pars, y, x):
     #we will minimize this function
     err =  y - Murnaghan(pars,x)
     return err
-	
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -63,11 +62,15 @@ def main():
 
     args = parser.parse_args()
 
-    dat = pd.read_csv(args.f)
+    dat = pd.read_csv(args.f, quoting=csv.QUOTE_NONE, error_bad_lines=False)
+    # keep only converged SCFs
+    print(dat.shape)
+    dat = dat.loc[dat['2'] == True]
+    dat = dat.dropna()
     energy = dat.iloc[:, 1]
 
     # change to SI
-    energy = energy * 2.1798741e-18
+    energy = energy_to_si(energy)
     latt = dist_to_si(dat.iloc[:, 0])
 
     # compute volume based on lattice constant
@@ -105,22 +108,29 @@ def main():
     murnpars, ier = leastsq(objective, x0, args=(energy, v)) #this is from scipy
 
     #now we make a figure summarizing the results
-    vfit = np.linspace(min(energy), max(energy), 100)
-    plt.plot(v,energy,'ro')
+    vlatt = np.linspace(min(latt), max(latt), 100)
+    vvol = lattice_to_volume(vlatt)
+    plt.plot(dist_from_si(latt), energy_from_si(energy),'ro')
     #plt.plot(vfit, a*vfit**2 + b*vfit + c,'--',label='parabolic fit')
-    plt.plot(vfit, Murnaghan(murnpars,vfit), label='Murnaghan fit')
-    plt.xlabel('Volume ($\AA^3$)')
+    y = Murnaghan(murnpars, vvol)
+    plt.plot(dist_from_si(vlatt), energy_from_si(y), label='Murnaghan fit')
+    plt.xlabel('Lattice (bohr)')
     plt.ylabel('Energy (eV)')
     plt.legend(loc='best')
     plt.savefig('a-eos.png')
 
+    err = np.mean(np.abs(objective(murnpars, energy, v)))
+    err = energy_from_si(err)
+
     v0 = murnpars[3]
     a0 = volume_to_lattice(v0)
-    b0 = murnpars[1]
+    b0 = murnpars[1]/1e9
     bP = murnpars[2]
-
-    print(dist_from_si(a0))
-    print(b0/1e9)
+    E0 = energy_from_si(Murnaghan(murnpars, v0))
+    
+    print(f'E0= {E0} a0= {dist_from_si(a0)} b0= {b0} bP= {bP} err={err}')
+    with open('a-eos.txt', 'w') as f:
+        print(f'{E0}, {dist_from_si(a0)}, {b0}, {bP}, {err}', file=f)
 
 if __name__ == "__main__":
     main()
